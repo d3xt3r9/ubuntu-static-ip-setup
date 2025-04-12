@@ -1,4 +1,19 @@
 #!/bin/bash
+# =============================================================================
+# Ubuntu Static IP Setup Script
+# 
+# This script configures a static IP address on Ubuntu/Debian systems
+# that use Netplan for network configuration. It includes:
+#   - Detection of the primary network interface
+#   - Setting static IP, gateway, and DNS servers
+#   - Optional hostname configuration
+#   - Optional IPv6 disabling
+#   - Handling of cloud-init network conflicts
+# 
+# Author: Athanasios Zannias
+# Version: 1.1
+# =============================================================================
+
 
 # Exit on any error
 set -e
@@ -8,13 +23,36 @@ DEFAULT_STATIC_IP="192.168.1.200/24"
 DEFAULT_GATEWAY="192.168.1.1"
 DEFAULT_DNS_SERVERS="8.8.8.8,8.8.4.4"
 
+# Basic IP validation function
+validate_ip() {
+  if [[ ! $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$ ]]; then
+    echo "Invalid IP format: $1"
+    return 1
+  fi
+  return 0
+}
+
+# Detect primary network interface
+PRIMARY_INTERFACE=$(ip route | grep default | awk '{print $5}' 2>/dev/null || echo "eth0")
+read -p "Enter network interface name (default: $PRIMARY_INTERFACE): " INTERFACE
+INTERFACE="${INTERFACE:-$PRIMARY_INTERFACE}"
+echo "Using network interface: $INTERFACE"
+
 # Prompt the user for the static IP address
 read -p "Enter the static IP address with subnet mask (default: $DEFAULT_STATIC_IP): " STATIC_IP
 STATIC_IP="${STATIC_IP:-$DEFAULT_STATIC_IP}"
+if ! validate_ip "$STATIC_IP"; then
+  echo "Invalid IP format. Using default instead: $DEFAULT_STATIC_IP"
+  STATIC_IP="$DEFAULT_STATIC_IP"
+fi
 
 # Prompt the user for the gateway
 read -p "Enter the gateway IP address (default: $DEFAULT_GATEWAY): " GATEWAY
 GATEWAY="${GATEWAY:-$DEFAULT_GATEWAY}"
+if ! validate_ip "$GATEWAY"; then
+  echo "Invalid gateway format. Using default instead: $DEFAULT_GATEWAY"
+  GATEWAY="$DEFAULT_GATEWAY"
+fi
 
 # Prompt the user for the DNS servers
 read -p "Enter DNS servers, comma-separated (default: $DEFAULT_DNS_SERVERS): " DNS_SERVERS
@@ -26,38 +64,47 @@ CLOUD_INIT_CFG="/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg"
 CLOUD_INIT_NETPLAN="/etc/netplan/50-cloud-init.yaml"
 IPv6_CONFIG_FILE="/etc/sysctl.d/99-disable-ipv6.conf"
 
-
 # Optional: Set hostname
 read -p "Enter hostname (leave blank to skip): " HOSTNAME
 if [ -n "$HOSTNAME" ]; then
     sudo hostnamectl set-hostname "$HOSTNAME"
-    echo "127.0.0.1 $HOSTNAME" | sudo tee -a /etc/hosts > /dev/null
-    echo "Hostname set to $HOSTNAME and added to /etc/hosts."
+    # Check if entry already exists before adding
+    if ! grep -q "127.0.0.1 $HOSTNAME" /etc/hosts; then
+        echo "127.0.0.1 $HOSTNAME" | sudo tee -a /etc/hosts > /dev/null
+        echo "Hostname set to $HOSTNAME and added to /etc/hosts."
+    else
+        echo "Hostname set to $HOSTNAME. Entry already exists in /etc/hosts."
+    fi
 fi
 
 # Disable cloud-init network configuration
 echo "network: {config: disabled}" | sudo tee "$CLOUD_INIT_CFG" > /dev/null
 echo "Disabled cloud-init network configuration."
 
-# Disable IPv6 system-wide by adding settings to sysctl.conf
-if [ -f "$IPv6_CONFIG_FILE" ]; then
-    echo "IPv6 disable configuration file already exists at $IPv6_CONFIG_FILE"
-else
-    # Create the configuration file with IPv6 disable settings
-    echo "Creating IPv6 disable configuration file at $IPv6_CONFIG_FILE"
+# Make IPv6 disabling optional
+read -p "Disable IPv6? (y/N): " DISABLE_IPV6
+if [[ "$DISABLE_IPV6" =~ ^[Yy]$ ]]; then
+    if [ -f "$IPv6_CONFIG_FILE" ]; then
+        echo "IPv6 disable configuration file already exists at $IPv6_CONFIG_FILE"
+    else
+        # Create the configuration file with IPv6 disable settings
+        echo "Creating IPv6 disable configuration file at $IPv6_CONFIG_FILE"
 
-    # Add IPv6 disable settings
-    sudo tee "$IPv6_CONFIG_FILE" > /dev/null <<EOF
+        # Add IPv6 disable settings
+        sudo tee "$IPv6_CONFIG_FILE" > /dev/null <<EOF
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 
-    echo "IPv6 disable configuration added to $IPv6_CONFIG_FILE"
+        echo "IPv6 disable configuration added to $IPv6_CONFIG_FILE"
 
-    # Apply the changes
-    sudo sysctl --system
-    echo "Applied IPv6 disable settings."
+        # Apply the changes
+        sudo sysctl --system
+        echo "Applied IPv6 disable settings."
+    fi
+else
+    echo "IPv6 will remain enabled."
 fi
 
 # Backup existing Netplan configuration if it exists
@@ -72,7 +119,7 @@ network:
   version: 2
   renderer: networkd
   ethernets:
-    eth0:
+    $INTERFACE:
       dhcp4: no
       dhcp6: no
       accept-ra: no
@@ -89,7 +136,7 @@ EOF
 # Set appropriate permissions for the Netplan file
 sudo chmod 600 "$NETPLAN_CONFIG"
 sudo chown root:root "$NETPLAN_CONFIG"
-echo "Set permissions for Netplan configuration to 644."
+echo "Set permissions for Netplan configuration to 600."
 
 # Delete any existing cloud-init network file to prevent conflicts
 if [ -f "$CLOUD_INIT_NETPLAN" ]; then
