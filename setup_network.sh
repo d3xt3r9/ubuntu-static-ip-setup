@@ -138,10 +138,16 @@ sudo chmod 600 "$NETPLAN_CONFIG"
 sudo chown root:root "$NETPLAN_CONFIG"
 echo "Set permissions for Netplan configuration to 600."
 
-# Delete any existing cloud-init network file to prevent conflicts
-if [ -f "$CLOUD_INIT_NETPLAN" ]; then
-    sudo rm "$CLOUD_INIT_NETPLAN"
-    echo "Removed conflicting cloud-init Netplan file: $CLOUD_INIT_NETPLAN"
+# Disable cloud-init network configuration if cloud-init is present
+if [ -d "/etc/cloud" ]; then
+    # Make sure the cloud.cfg.d directory exists
+    sudo mkdir -p /etc/cloud/cloud.cfg.d/
+    
+    # Create the config file
+    echo "network: {config: disabled}" | sudo tee "$CLOUD_INIT_CFG" > /dev/null
+    echo "Disabled cloud-init network configuration."
+else
+    echo "Cloud-init not detected on this system, skipping cloud-init configuration."
 fi
 
 echo "Netplan configuration updated with static IP: $STATIC_IP and gateway via $GATEWAY."
